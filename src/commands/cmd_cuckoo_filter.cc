@@ -18,25 +18,25 @@
  *
  */
 
-#include "commander.h"
 #include "command_parser.h"
+#include "commander.h"
+#include "types/redis_cuckoo_filter_chain.h"
+#include "server/server.h"
+namespace {
 
+constexpr const char *errBadCapacity = "Bad capacity";
+constexpr const char *errBadBucketSize = "Bad bucket size";
+constexpr const char *errBadMaxIterations = "Bad max iterations";
+constexpr const char *errBadExpansion = "Bad expansion";
+constexpr const char *errInvalidBucketSize = "Bucket size should be greater than 0";
+constexpr const char *errInvalidMaxIterations = "Max iterations should be greater than 0";
+constexpr const char *errInvalidExpansion = "Expansion should be greater than 0";
+constexpr const char *errInvalidSyntax = "Invalid syntax";
 
-namespace{
-
-    constexpr const char *errBadCapacity = "Bad capacity";
-    constexpr const char *errBadBucketSize = "Bad bucket size";
-    constexpr const char *errBadMaxIterations = "Bad max iterations";
-    constexpr const char *errBadExpansion = "Bad expansion";
-    constexpr const char *errInvalidBucketSize = "Bucket size should be greater than 0";
-    constexpr const char *errInvalidMaxIterations = "Max iterations should be greater than 0";
-    constexpr const char *errInvalidExpansion = "Expansion should be greater than 0";
-    constexpr const char *errInvalidSyntax = "Invalid syntax";
-
-} // namespace
+}  // namespace
 namespace redis {
 
-class CommandCuckooFilter : public Commander {
+class CoomandCFReserve : public Commander {
  public:
   // CF.RESERVE cf 1000 or CF.RESERVE cf_params 1000 BUCKETSIZE 8 MAXITERATIONS 20 EXPANSION 2
   Status Parse(const std::vector<std::string> &args) override {
@@ -105,13 +105,20 @@ class CommandCuckooFilter : public Commander {
     return Commander::Parse(args);
   }
 
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooFilterChain cuckoo_db(srv->storage, conn->GetNamespace());
+    cuckoo_db.Reserve(ctx, args_[1], capacity_, bucket_size_, max_iterations_, expansion_);
+
+    *output = redis::RESP_OK;
+    return Status::OK();
+  }
+
  private:
   uint32_t capacity_ = 1000;      // capacity of the cuckoo filter
   uint16_t bucket_size_ = 8;      // size of each bucket
   uint16_t max_iterations_ = 20;  // max iterations for cuckoo filter operations
   uint16_t expansion_ = 2;        // expansion factor for cuckoo filter
+};
 
-}
-
-REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CommandCuckooFilter>("cd.add", 3, "write", 1, 1, 1))
+REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CoomandCFReserve>("cf.reserver", 3, "write", 1, 1, 1))
 }  // namespace redis
