@@ -19,6 +19,8 @@
  */
 
 #include "storage/redis_db.h"
+#include "storage/redis_metadata.h"
+
 
 namespace redis {
 
@@ -29,6 +31,10 @@ class CuckooFilterChain : public Database {
   // Reserve a cuckoo filter chain with the given parameters
   rocksdb::Status Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity, uint32_t bucket_size,
                           uint16_t expansion, uint16_t max_iterations);
+
+ private:
+    rocksdb::Status createCuckooFilterChain(engine::Context &ctx, const Slice &ns_key, uint32_t capacity,uint32_t bucket_size, uint16_t expansion,uint16_t max_iterations, CuckooFilterChainMetadata *metadata);
+    std::string getCFKey(const Slice &ns_key,const CuckooFilterChainMetadata &metadata,uint16_t filters_index);
 };
 
 }  // namespace redis

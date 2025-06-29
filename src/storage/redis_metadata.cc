@@ -460,6 +460,32 @@ uint32_t BloomChainMetadata::GetCapacity() const {
   return static_cast<uint32_t>(base_capacity * (1 - pow(expansion, n_filters)) / (1 - expansion));
 }
 
+void CuckooFilterChainMetadata::Encode(std::string *dst) const {
+  Metadata::Encode(dst);
+
+  PutFixed16(dst, n_filters);
+  PutFixed16(dst, expansion);
+
+  PutFixed32(dst, capacity);
+}
+
+rocksdb::Status CuckooFilterChainMetadata::Decode(Slice *input) {
+  if (auto s = Metadata::Decode(input); !s.ok()) {
+    return s;
+  }
+
+  if (input->size() < 20) {
+    return rocksdb::Status::InvalidArgument(kErrMetadataTooShort);
+  }
+
+  GetFixed16(input, &n_filters);
+  GetFixed16(input, &expansion);
+
+  GetFixed32(input, &capacity);
+
+  return rocksdb::Status::OK();
+}
+
 void JsonMetadata::Encode(std::string *dst) const {
   Metadata::Encode(dst);
 
