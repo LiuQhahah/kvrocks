@@ -20,8 +20,8 @@
 
 #include "command_parser.h"
 #include "commander.h"
-#include "types/redis_cuckoo_filter_chain.h"
 #include "server/server.h"
+#include "types/redis_cuckoo_filter_chain.h"
 namespace {
 
 constexpr const char *errBadCapacity = "Bad capacity";
@@ -120,5 +120,16 @@ class CoomandCFReserve : public Commander {
   uint16_t expansion_ = 2;        // expansion factor for cuckoo filter
 };
 
-REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CoomandCFReserve>("cf.reserver", 3, "write", 1, 1, 1))
+class CommandCFAdd : public Commander{
+  public:
+  Status Execute(engine::Context &ctx,Server *srv,Connection *conn,std::string *output) override{
+    redis::CuckooFilterChain cuckoo_db(srv->storage,conn->GetNamespace());
+    CuckooFilterAddResult res = CuckooFilterAddResult::kOk;
+
+    auto s = cuckoo_db.Add(ctx,args_[1],args_[2],&ret);
+  }
+
+}
+REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CoomandCFReserve>("cf.reserver", 3, "write", 1, 1, 1),
+                        MakeCmdAttr<CommandCFAdd>("cf.add", 3, "write", 1, 1, 1))
 }  // namespace redis

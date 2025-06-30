@@ -3,6 +3,69 @@
 #include "cuckoo_filter.h"
 
 namespace redis {
+
+rocksdb::Status CuckooFilterChain::MAdd(engine::Context &ctx, const Slice &user_key,
+                                        const std::vector<std::string> &items,
+                                        std::vector<CuckooFilterAddResult> *rets) {
+  CuckooFilterInsertOptions insert_options;
+  return InsertCommon(ctx, user_key, items, insert_options, rets);
+}
+
+rocksdb::Status CuckooFilterChain::getCuckooFilterChainMetadata(engine::Context &ctx, const Slice &ns_key,
+                                                                CuckooFilterChainMetadata *metadata) {
+  return Database::GetMetadata(ctx, {kRedisCuckooFilter}, ns_key, metadata);
+}
+
+rocksdb::Status CuckooFilterChain::InsertCommon(engine::Context &ctx, const Slice &user_key,
+                                                const std::vector<std::string> &items,
+                                                const CuckooFilterInsertOptions &insert_options,
+                                                std::vector<CuckooFilterAddResult> *results) {
+  if (items.empty()) {
+    return rocksdb::Status::OK();
+  }
+
+  std::string ns_key = AppendNamespacePrefix(user_key);
+  ctx.txn_context_enabled = false;
+
+  CuckooFilterChainMetadata metadata;
+  rocksdb::Status s = getCuckooFilterChainMetadata(ctx, ns_key, &metadata);
+
+  if (s.IsNotFound()&&insert_options.auto_create){
+    s = createCuckooFilterChain(ctx,ns_key,insert_options.capacity,insert_options.bucket_size,
+                                insert_options.expansion,insert_options.max_iterations,&metadata);
+  }
+
+  if (!s.ok()){
+    return s;
+  }
+
+  std::vector<std::string> cf_key_lists;
+  getCFKeyList(ns_key,metadata,&cf_key_lists);
+
+  std::vector<rocksdb::PinnableSlice cf_data_list;
+  s = getCFDataList(ctx,bf_key_list,&bf_data_list);
+  if (!s.ok()){
+    return s;
+  }
+
+  
+
+}
+
+void CuckooFilterChain::getCFKeyList(const Slice &ns_key,const CuckooFilterChainMetadata &metadata,std::vector<std::string> *cf_key_list){
+  cf_key_list->reserve(metadata.n_filters);
+  for (uint16_t i = 0; i < metadata.n_filters; ++i) {
+    std::string cf_key = getCFKey(ns_key, metadata, i);
+    cf_key_list->push_back(std::move(cf_key));
+  }
+}
+rocksdb::Status CuckooFilterChain::Add(engine::Context &ctx, const Slice &user_key, const std::string &item,
+                                       CuckooFilterAddResult *ret) {
+  std::vector < CuckooFilterAddResult tmp{CuckooFilterAddResult::kOk};
+  rocksdb::Status s = MAdd(ctx, user_key, {item}, &tmp);
+  *ret = tmp[0];
+  return s;
+}
 rocksdb::Status CuckooFilterChain::Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity,
                                            uint32_t bucket_size, uint16_t expansion, uint16_t max_iterations) {
   std::string ns_key = AppendNamespacePrefix(user_key);

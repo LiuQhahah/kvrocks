@@ -21,8 +21,21 @@
 #include "storage/redis_db.h"
 #include "storage/redis_metadata.h"
 
-
 namespace redis {
+
+struct CuckooFilterInsertOptions {
+  uint32_t capacity = 1000;       // default capacity
+  uint32_t bucket_size = 4;       // default bucket size
+  uint16_t expansion = 2;         // default expansion factor
+  uint16_t max_iterations = 500;  // default max iterations
+  bool auto_create = true;        // default auto create
+};
+
+enum class CuckooFilterAddResult {
+  kOk,
+  kExist,
+  kFull,
+};
 
 class CuckooFilterChain : public Database {
  public:
@@ -31,10 +44,38 @@ class CuckooFilterChain : public Database {
   // Reserve a cuckoo filter chain with the given parameters
   rocksdb::Status Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity, uint32_t bucket_size,
                           uint16_t expansion, uint16_t max_iterations);
+  rocksdb::Status Add(engine::Context &ctx, const Slice &user_key, const std::string &item, CuckooFilterAddResult *ret);
+  rocksdb::Status MAdd(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                       std::vector < CuckooFilterAddResult);
+  rocksdb::Status InsertCommon(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                               const CuckooFilterInsertOptions &insert_options,
+                               std::vector<CuckooFilterAddResult> *results);
 
  private:
-    rocksdb::Status createCuckooFilterChain(engine::Context &ctx, const Slice &ns_key, uint32_t capacity,uint32_t bucket_size, uint16_t expansion,uint16_t max_iterations, CuckooFilterChainMetadata *metadata);
-    std::string getCFKey(const Slice &ns_key,const CuckooFilterChainMetadata &metadata,uint16_t filters_index);
+  rocksdb::Status createCuckooFilterChain(engine::Context &ctx, const Slice &ns_key, uint32_t capacity,
+                                          uint32_t bucket_size, uint16_t expansion, uint16_t max_iterations,
+                                          CuckooFilterChainMetadata *metadata);
+  std::string getCFKey(const Slice &ns_key, const CuckooFilterChainMetadata &metadata, uint16_t filters_index);
+  rocksdb::Status getCuckooFilterChainMetadata(engine::Context &ctx, const Slice &ns_key,
+                                               CuckooFilterChainMetadata *metadata);
+  void getCFKeyList(const Slice &ns_key, const CuckooFilterChainMetadata &metadata, std::vector<std::string> *cf_keys);
+  rocksdb::Status getCFDataList(engine::Context &ctx, const std::vector<std::string> &cf_key_list,
+                                std::vector<rocksdb::PinnableSlice> *cf_data_list);
+
+  rocksdb::Status CuckooFilterChain::getCFDataList(engine::Context &ctx, const std::vector<std::string> &cf_key_list,
+                                                   std::vector<rocksdb::PinnableSlice> *cf_data_list) {
+    cf_data_list->reserve(cf_key_list.size());
+    for (const auto &cf_key : cf_key_list) {
+      rocksdb::PinnableSlice pin_value;
+
+      rocksdb::Status s = storage_->Get(ctx, ctx.GetReadOptions(), cf_key, &pin_value);
+
+      if (!s.ok()) return s;
+      cf_data_list->push_back(std::move(pin_value));
+    }
+
+    return rocksdb::Status::OK();
+  }
 };
 
 }  // namespace redis
