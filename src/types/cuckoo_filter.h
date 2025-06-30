@@ -22,9 +22,9 @@
 #include <memory>
 #include <nonstd/span.hpp>
 #include <string>
-#include "storage/redis_metadata.h"
 
 #include "status.h"
+#include "storage/redis_metadata.h"
 
 class BlockSplitCuckooFilter;
 using OwnedBlockSplitCuckooFilter = std::tuple<BlockSplitCuckooFilter, std::string>;
@@ -32,9 +32,9 @@ OwnedBlockSplitCuckooFilter CreateBlockSplitCuckooFilter(CuckooFilterChainMetada
 
 class BlockSplitCuckooFilter {
  public:
-  explicit BlockSplitCuckooFilter(nonstd::span<char> data) : data_(data) {};
-  std::string_view GetData() const { return {data_.data(), data_.size()}; }
+  explicit BlockSplitCuckooFilter(std::string data) : data_(std::move(data)) {}
+  std::string_view GetData() const { return data_; }
 
  private:
-  nonstd::span<char> data_;
+  std::string data_;
 };

@@ -20,9 +20,14 @@
 
 OwnedBlockSplitCuckooFilter CreateBlockSplitCuckooFilter(CuckooFilterChainMetadata *metadata){
 
-    std::string data(metadata->capacity,0);
-    return {BlockSplitCuckooFilter(data),std::move(data)};
 
+    if(!metadata||metadata->capacity==0){
+        return {BlockSplitCuckooFilter(std::string()),std::string()};
+    }
+    std::string data(metadata->capacity,0);
+    BlockSplitCuckooFilter filter(data);
+
+    return {std::move(filter),std::move(data)};
 }
 
 
