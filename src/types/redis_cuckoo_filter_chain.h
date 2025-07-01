@@ -21,6 +21,10 @@
 #include "storage/redis_db.h"
 #include "storage/redis_metadata.h"
 
+// define MurmurHash64A_Bloom function
+#include "murmur2/murmurhash2.h"
+#define CUCKOO_GEN_HASH(s, n) MurmurHash64A_Bloom(s, n, 0)
+
 namespace redis {
 
 struct CuckooFilterInsertOptions {
@@ -31,10 +35,52 @@ struct CuckooFilterInsertOptions {
   bool auto_create = true;        // default auto create
 };
 
+uint8_t CuckooFingerprint;
+uint64_t CuckooHash;
+uint8_t CuckooBucket[1];
+uint8_t MyCuckooBucket;
+#define CF_MAX_NUM_BUCKETS (0x00FFFFFFFFFFFFFFULL) // 56 bits, see struct SubCF
+
+struct SubCF{
+  uint64_t num_buckets:56;
+  uint64_t bucket_size:8; 
+  MyCuckooBucket *my_cuckoo_bucket; 
+};
+
+
+struct LookupParams{
+  CuckooHash h1;
+  Cuckoohash h2;
+  CuckooFingerprint fp;
+}
+struct CuckooFilter{
+  uint64_t num_buckets;  // number of buckets
+  uint64_t num_items;   // number of items in the filter
+  uint64_t num_deletes; // number of deleted items
+  uint16_t num_filters; // number of filters in the chain
+  uint16_t bucket_size; // size of each bucket
+  uint16_t expansion;   // expansion factor
+  SubCF *sub_cf; // pointer to the sub cuckoo filters
+};
+
+
+
 enum class CuckooFilterAddResult {
   kOk,
   kExist,
   kFull,
+};
+enum CuckooFilterInsertStatus{
+  CuckooInsert_Inserted = 1,
+  CuckooInsert_Exists = 0,
+  CuckooInsert_NoSpace = -1,
+  CuckooInsert_MemAllocFailed = -2
+};
+
+enum CuckooRc{
+  CUCKOO_OK = 0,
+  CUCKOO_ERR = -1,
+  CUCKOO_OOM = -2,
 };
 
 class CuckooFilterChain : public Database {
@@ -55,7 +101,9 @@ class CuckooFilterChain : public Database {
   rocksdb::Status createCuckooFilterChain(engine::Context &ctx, const Slice &ns_key, uint32_t capacity,
                                           uint32_t bucket_size, uint16_t expansion, uint16_t max_iterations,
                                           CuckooFilterChainMetadata *metadata);
-  std::string getCFKey(const Slice &ns_key, const CuckooFilterChainMetadata &metadata, uint16_t filters_index);
+  void getLookupParams(CuckooHash hash,LookupParams *params);
+  CuckooHash getAltHash(CuckooFingerprint fp,CuckooHash index);
+                                          std::string getCFKey(const Slice &ns_key, const CuckooFilterChainMetadata &metadata, uint16_t filters_index);
   rocksdb::Status getCuckooFilterChainMetadata(engine::Context &ctx, const Slice &ns_key,
                                                CuckooFilterChainMetadata *metadata);
   void getCFKeyList(const Slice &ns_key, const CuckooFilterChainMetadata &metadata, std::vector<std::string> *cf_keys);

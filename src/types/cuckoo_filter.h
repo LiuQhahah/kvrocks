@@ -37,4 +37,7 @@ class BlockSplitCuckooFilter {
 
  private:
   std::string data_;
+  uint64_t numBuckets;
+  uint64_t bucketSize;
+  uint8_t *data;
 };
