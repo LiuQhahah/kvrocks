@@ -73,6 +73,139 @@ rocksdb::Status CuckooFilterChain::InsertCommon(engine::Context &ctx, const Slic
   }
 }
 
+uint32_t SubCF_GetIndex(const SubCF *subCF,CuckooHash hash){
+  return (hash%subCF->num_buckets)*subCF->bucket_size;
+}
+
+uint8_t *Bucket_FindAvailable(CuckooBucket bucket,uint16_t bucket_size){
+  // Find an available slot in the bucket
+  for(uint16_t ii=0;ii<bucket_size;++ii){
+    if(bucket[ii]==CUCKOO_NULLFP){
+      return &bucket[ii];
+    }
+  }
+  return NULL;
+}
+
+uint8_t *Filter_FindAvailable(SubCF *filter,const LookupParams *params){
+  uint8_t *slot;
+  uint8_t bucket_size = filter->bucket_size;
+  uint64_t loc1 = SubCF_GetIndex(filter,params->h1);
+  uint64_t loc2 = SubCF_GetIndex(filter,params->h2);
+  if((slot=Bucket_FindAvailable(&filter->data[loc1],bucket_size))||(slot=Bucket_FindAvailable(&filter->data[loc2],bucket_size))){
+    return slot;
+  }
+  return NULL;
+}
+CuckooFilterInsertStatus CuckooFilter_InsertFP(CuckooFilter *filter,LookupParams *params){
+  for(uint16_t ii = filter->num_filters;ii>0;--ii){
+    uint8_t *slot = Filter_FindAvailable(&filter->filters[ii-1],params);
+    if(slot){
+      *slot = params->fp;
+      filter->num_items++;
+      return CuckooInsert_Inserted;
+    }
+  }
+
+  // No available slot found, need to kick out an item
+  CuckooFilterInsertStatus status = Filter_KickOutInsert(filter, &filter->filters[filter->num_filters-1],params);
+
+  if (status==CuckooInsert_Inserted){
+    filter->num_items++;
+    return CuckooInsert_Inserted;
+  }
+
+  if(filter->expansion==0){
+    return CuckooInsert_NoSpace;
+  }
+
+  if(CuckooFilter_Grow(filter)!=0){
+    return CuckooInsert_MemAllocFailed;
+  }
+
+  // Retry the insertion after growing the filter
+  return CuckooFilter_InsertFP(filter, params);
+}
+
+
+int CuckooFilter_Grow(CuckooFilter *filter) {
+    SubCF *filtersArray = reinterpret_cast<SubCF *>(
+        realloc(filter->filters, sizeof(SubCF) * (filter->num_filters + 1))
+    );
+    if (!filtersArray) {
+        return -1; 
+    }
+
+    filter->filters = filtersArray;
+    SubCF *currentFilter = filtersArray + filter->num_filters;
+    currentFilter->bucket_size = filter->bucket_size;
+    currentFilter->my_cuckoo_bucket = nullptr;
+
+    size_t growth = 1;
+    for (uint16_t i = 0; i < filter->num_filters; ++i) {
+        growth *= filter->expansion;
+    }
+
+    if (growth > CF_MAX_NUM_BUCKETS / filter->num_buckets) {
+        return -1;
+    }
+    currentFilter->num_buckets = filter->num_buckets * growth;
+
+    if (filter->bucket_size > SIZE_MAX / currentFilter->num_buckets) {
+        return -1;
+    }
+
+    currentFilter->my_cuckoo_bucket = reinterpret_cast<MyCuckooBucket *>(
+        calloc((size_t)currentFilter->num_buckets * filter->bucket_size, sizeof(MyCuckooBucket))
+    );
+    if (!currentFilter->my_cuckoo_bucket) {
+        return -1;
+    }
+
+    filter->num_filters++;
+
+    return 0;
+}
+
+CuckooInsertStatus Filter_KickOutInsert(CuckooFilter *filter,SubCF *cur_filter,const LookupParams *params){
+  uint16_t max_iterations = filter->max_iterations;
+  uint32_t num_buckets = cur_filter->num_buckets;
+  uint16_t bucket_size = filter->bucket_size;
+  CuckooFingerprint fp = params->fp;
+
+  uint16_t counter = 0;
+  uint32_t victim_index = 0;
+  uint32_t ii = params->h1%num_buckets;
+
+  while (counter++<max_iterations){
+    uint8_t *bucket = &cur_filter->data[ii*bucket_size];
+    swapFPs(bucket+victim_index,&fp);
+    ii = getAltHash(fp,ii) % num_buckets;
+    uint8_t *empty = Bucket_FindAvailable(&cur_filter->data[ii*bucket_size],bucket_size);
+    if(empty){
+      *empty = fp;
+      return CuckooInsert_Inserted;
+    }
+    victim_index = (victim_index + 1) % bucket_size;
+  }
+
+  counter = 0;
+  while(counter++<max_iterations){
+    victim_index = (victim_index + bucket_size-1)%bucket_size;
+    ii = getAltHash(fp,ii)%num_buckets;
+    uint8_t *bucket = &cur_filter->data[ii*bucket_size];
+    swapFPs(bucket+victim_index,&fp);
+
+  }
+  return CuckooInsert_NoSpace;
+}
+
+// Swap two fingerprint values in a bucket
+void swapFPs(uint8_t *a, uint8_t *b) {
+  uint8_t temp = *a;
+  *a = *b;
+  *b = temp;
+}
 void getLookupParams(CuckooHash hash, LookupParams *params) {
    params->fp = hash % 255 + 1; 
    params->h1 = hash;
