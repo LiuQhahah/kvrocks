@@ -79,4 +79,17 @@ std::string StringJoin(const T &con, std::string_view sep = ", ") {
       con, [](const auto &v) -> decltype(auto) { return v; }, sep);
 }
 
+// Returns the smallest power of 2 greater than or equal to n
+inline uint32_t NextPowerOf2(uint32_t n) {
+  if (n == 0) return 1;
+  n--;
+  n |= n >> 1;
+  n |= n >> 2;
+  n |= n >> 4;
+  n |= n >> 8;
+  n |= n >> 16;
+  n++;
+  return n;
+}
+
 }  // namespace util

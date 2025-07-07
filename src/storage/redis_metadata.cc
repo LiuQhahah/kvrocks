@@ -460,21 +460,26 @@ uint32_t BloomChainMetadata::GetCapacity() const {
   return static_cast<uint32_t>(base_capacity * (1 - pow(expansion, n_filters)) / (1 - expansion));
 }
 
-void CuckooFilterChainMetadata::Encode(std::string *dst) const {
+void CuckooChainMetadata::Encode(std::string *dst) const {
   Metadata::Encode(dst);
 
   PutFixed16(dst, n_filters);
   PutFixed16(dst, expansion);
 
   PutFixed32(dst, capacity);
+  PutFixed8(dst, bucket_size);
+  PutFixed16(dst, max_iterations);
+  PutFixed32(dst, table_size);
 }
 
-rocksdb::Status CuckooFilterChainMetadata::Decode(Slice *input) {
+rocksdb::Status CuckooChainMetadata::Decode(Slice *input) {
   if (auto s = Metadata::Decode(input); !s.ok()) {
     return s;
   }
 
-  if (input->size() < 20) {
+  // Check for minimum size required for all fields
+  // n_filters (2) + expansion (2) + capacity (4) + bucket_size (1) + max_iterations (2) + table_size (4) = 15 bytes
+  if (input->size() < 15) {
     return rocksdb::Status::InvalidArgument(kErrMetadataTooShort);
   }
 
@@ -482,8 +487,16 @@ rocksdb::Status CuckooFilterChainMetadata::Decode(Slice *input) {
   GetFixed16(input, &expansion);
 
   GetFixed32(input, &capacity);
+  GetFixed8(input, &bucket_size);
+  GetFixed16(input, &max_iterations);
+  GetFixed32(input, &table_size);
 
   return rocksdb::Status::OK();
+}
+
+uint32_t CuckooChainMetadata::GetCapacity() const {
+  // For Cuckoo Filter, capacity is directly stored
+  return capacity;
 }
 
 void JsonMetadata::Encode(std::string *dst) const {

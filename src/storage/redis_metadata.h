@@ -305,22 +305,24 @@ class BloomChainMetadata : public Metadata {
   bool IsScaling() const { return expansion != 0; };
 };
 
-class CuckooFilterChainMetadata : public Metadata {
+class CuckooChainMetadata : public Metadata {
  public:
   uint16_t n_filters;
   uint16_t expansion;
   uint32_t capacity;
-  uint32_t bucket_size;
+  uint8_t bucket_size;
   uint16_t max_iterations;
+  uint32_t table_size;
 
-  explicit CuckooFilterChainMetadata(bool generation_version = true)
-      : Metadata(kRedisCuckooFilter, generation_version) {}
+  explicit CuckooChainMetadata(bool generate_version = true)
+      : Metadata(kRedisCuckooFilter, generate_version) {}
+
   void Encode(std::string *dst) const override;
   using Metadata::Decode;
-  rocksdb::Status Decode(Slice *byte) override;
+  rocksdb::Status Decode(Slice *input) override;
+
   uint32_t GetCapacity() const;
   bool IsScaling() const { return expansion != 0; };
-
 };
 
 enum class JsonStorageFormat : uint8_t {

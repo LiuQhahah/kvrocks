@@ -20,116 +20,82 @@
 
 #include "command_parser.h"
 #include "commander.h"
+#include "error_constants.h"
 #include "server/server.h"
-#include "types/redis_cuckoo_filter_chain.h"
-namespace {
+#include "types/redis_cuckoo_chain.h"
 
-constexpr const char *errBadCapacity = "Bad capacity";
-constexpr const char *errBadBucketSize = "Bad bucket size";
-constexpr const char *errBadMaxIterations = "Bad max iterations";
-constexpr const char *errBadExpansion = "Bad expansion";
-constexpr const char *errInvalidBucketSize = "Bucket size should be greater than 0";
-constexpr const char *errInvalidMaxIterations = "Max iterations should be greater than 0";
-constexpr const char *errInvalidExpansion = "Expansion should be greater than 0";
-constexpr const char *errInvalidSyntax = "Invalid syntax";
-
-}  // namespace
 namespace redis {
 
-class CoomandCFReserve : public Commander {
+class CommandCFReserve : public Commander {
  public:
-  // CF.RESERVE cf 1000 or CF.RESERVE cf_params 1000 BUCKETSIZE 8 MAXITERATIONS 20 EXPANSION 2
   Status Parse(const std::vector<std::string> &args) override {
-    if (args.size() != 3 || args.size() != 6) {
-      return {Status::RedisParseErr, "Wrong number of arguments for 'cf.reserve' command"};
+    auto parse_capacity = ParseInt<uint32_t>(args[2], 10);
+    if (!parse_capacity) {
+      return {Status::RedisParseErr, "invalid capacity"};
     }
-    if (args.size() == 3) {
-      //  parse capacity with default bucket size 8, max iterations 20, expansion 2
-      auto parse_capacity = ParseInt<uint32_t>(args[2], 10);
-      if (!parse_capacity) {
-        return {Status::RedisParseErr, errBadCapacity};
-      }
-      capacity_ = *parse_capacity;
-      if (capacity_ <= 0) {
-        return {Status::RedisParseErr, errInvalidExpansion};
-      }
-      bucket_size_ = 8;
-      max_iterations_ = 20;
-      expansion_ = 2;
-    } else if (args.size() == 6) {
-      // parse capacity with custom parameters
-      auto parse_capacity = ParseInt<uint32_t>(args[2], 10);
-      if (!parse_capacity) {
-        return {Status::RedisParseErr, errBadCapacity};
-      }
-      capacity_ = *parse_capacity;
-      if (capacity_ <= 0) {
-        return {Status::RedisParseErr, "Capacity should be larger than 0"};
-      }
-      CommandParser parser(args, 3);
-      while (parser.Good()) {
-        if (parser.EatEqICase("bucketsize")) {
-          auto parse_bucket_size = parser.TakeInt<uint16_t>();
-          if (!parse_bucket_size.IsOK()) {
-            return {Status::RedisParseErr, "Bad bucket size"};
-          }
-          bucket_size_ = parse_bucket_size.GetValue();
-          if (bucket_size_ < 1) {
-            return {Status::RedisParseErr, "Bucket size should be greater than 0"};
-          }
+    capacity_ = *parse_capacity;
+    if (capacity_ <= 0) {
+      return {Status::RedisParseErr, "capacity should be larger than 0"};
+    }
 
-        } else if (parser.EatEqICase("maxiterations")) {
-          auto parse_max_iterations = parser.TakeInt<uint16_t>();
-          if (!parse_max_iterations.IsOK()) {
-            return {Status::RedisParseErr, "Bad max iterations"};
-          }
-          max_iterations_ = parse_max_iterations.GetValue();
-          if (max_iterations_ < 1) {
-            return {Status::RedisParseErr, "Max iterations should be greater than 0"};
-          }
-
-        } else if (parser.EatEqICase("expansion")) {
-          auto parse_expansion = parser.TakeInt<uint16_t>();
-          if (!parse_expansion.IsOK()) {
-            return {Status::RedisParseErr, "Bad expansion"};
-          }
-          expansion_ = parse_expansion.GetValue();
-          if (expansion_ < 1) {
-            return {Status::RedisParseErr, "Expansion should be greater than 0"};
-          }
-        } else {
-          return {Status::RedisParseErr, "Invalid syntax"};
-        }
+    CommandParser parser(args, 3);
+    while (parser.Good()) {
+      if (parser.EatEqICase("BUCKETSIZE")) {
+        auto parse_bucket_size = parser.TakeInt<uint8_t>();
+        if (!parse_bucket_size.IsOK()) return parse_bucket_size.ToStatus();
+        bucket_size_ = parse_bucket_size.GetValue();
+      } else if (parser.EatEqICase("MAXITERATIONS")) {
+        auto parse_max_iterations = parser.TakeInt<uint16_t>();
+        if (!parse_max_iterations.IsOK()) return parse_max_iterations.ToStatus();
+        max_iterations_ = parse_max_iterations.GetValue();
+      } else {
+        return {Status::RedisParseErr, errInvalidSyntax};
       }
     }
+
     return Commander::Parse(args);
   }
 
   Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
-    redis::CuckooFilterChain cuckoo_db(srv->storage, conn->GetNamespace());
-    cuckoo_db.Reserve(ctx, args_[1], capacity_, bucket_size_, max_iterations_, expansion_);
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    auto s = cuckoo_db.Reserve(ctx, args_[1], capacity_, bucket_size_, max_iterations_);
+    if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
 
     *output = redis::RESP_OK;
     return Status::OK();
   }
 
  private:
-  uint32_t capacity_ = 1000;      // capacity of the cuckoo filter
-  uint16_t bucket_size_ = 8;      // size of each bucket
-  uint16_t max_iterations_ = 20;  // max iterations for cuckoo filter operations
-  uint16_t expansion_ = 2;        // expansion factor for cuckoo filter
+  uint32_t capacity_ = kCFDefaultCapacity;
+  uint8_t bucket_size_ = kCFDefaultBucketSize;
+  uint16_t max_iterations_ = kCFDefaultMaxIterations;
 };
 
-class CommandCFAdd : public Commander{
-  public:
-  Status Execute(engine::Context &ctx,Server *srv,Connection *conn,std::string *output) override{
-    redis::CuckooFilterChain cuckoo_db(srv->storage,conn->GetNamespace());
-    CuckooFilterAddResult res = CuckooFilterAddResult::kOk;
+class CommandCFAdd : public Commander {
+ public:
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    CuckooFilterAddResult ret = CuckooFilterAddResult::kOk;
 
-    auto s = cuckoo_db.Add(ctx,args_[1],args_[2],&ret);
+    auto s = cuckoo_db.Add(ctx, args_[1], args_[2], &ret);
+    if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
+
+    switch (ret) {
+      case CuckooFilterAddResult::kOk:
+        *output = redis::Integer(1);
+        break;
+      case CuckooFilterAddResult::kExist:
+        *output = redis::Integer(0);
+        break;
+      case CuckooFilterAddResult::kFull:
+        *output = redis::Error({Status::NotOK, "Cuckoo filter is full"});
+        break;
+    }
+    return Status::OK();
   }
+};
 
-}
-REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CoomandCFReserve>("cf.reserver", 3, "write", 1, 1, 1),
-                        MakeCmdAttr<CommandCFAdd>("cf.add", 3, "write", 1, 1, 1))
+REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CommandCFReserve>("cf.reserve", -3, "write", 1, 1, 1),
+                        MakeCmdAttr<CommandCFAdd>("cf.add", 3, "write", 1, 1, 1), )
+
 }  // namespace redis
