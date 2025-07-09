@@ -47,7 +47,6 @@ std::vector<std::string> CuckooChain::getCFKeys(const Slice &user_key, const Cuc
 
 rocksdb::Status CuckooChain::Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity,
                                      uint8_t bucket_size, uint16_t max_iterations, uint8_t expansion) {
-  key_ = user_key.ToString();
   std::string ns_key = AppendNamespacePrefix(user_key);
 
   CuckooChainMetadata metadata;
@@ -82,7 +81,9 @@ rocksdb::Status CuckooChain::Reserve(engine::Context &ctx, const Slice &user_key
   return storage_->Write(ctx, storage_->DefaultWriteOptions(), batch->GetWriteBatch());
 }
 
-rocksdb::Status CuckooChain::expand(engine::Context &ctx, CuckooChainMetadata &metadata) {
+rocksdb::Status CuckooChain::expand(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata &metadata) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
+
   auto batch = storage_->GetWriteBatchBase();
   WriteBatchLogData log_data(kRedisCuckooFilter, {"EXPAND"});
   batch->PutLogData(log_data.Encode());
@@ -94,20 +95,18 @@ rocksdb::Status CuckooChain::expand(engine::Context &ctx, CuckooChainMetadata &m
   metadata.capacity = new_capacity;
   metadata.table_size = new_table_size;
 
-  std::string ns_key = AppendNamespacePrefix(key_);
-  std::string cf_key = getCFKey(ns_key, metadata, metadata.n_filters - 1);
-  batch->Put(cf_key, CuckooFilter::Create(new_table_size));
-
   std::string metadata_bytes;
   metadata.Encode(&metadata_bytes);
   batch->Put(metadata_cf_handle_, ns_key, metadata_bytes);
+
+  std::string cf_key = getCFKey(ns_key, metadata, metadata.n_filters - 1);
+  batch->Put(cf_key, CuckooFilter::Create(new_table_size));
 
   return storage_->Write(ctx, storage_->DefaultWriteOptions(), batch->GetWriteBatch());
 }
 
 rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, const std::string &item,
                                  CuckooFilterAddResult *ret) {
-  key_ = user_key.ToString();
   std::string ns_key = AppendNamespacePrefix(user_key);
 
   CuckooChainMetadata metadata;
@@ -142,7 +141,11 @@ rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, co
   }
 
   // Last filter is full, expand and add
-  s = expand(ctx, metadata);
+  s = expand(ctx, user_key, metadata);
+  if (!s.ok()) return s;
+
+  // After expansion, metadata is updated in DB, but we need to re-read it to get the latest state
+  s = getCuckooChainMetadata(ctx, ns_key, &metadata);
   if (!s.ok()) return s;
 
   std::string new_cf_key = getCFKey(ns_key, metadata, metadata.n_filters - 1);
@@ -170,7 +173,6 @@ rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, co
 }
 
 rocksdb::Status CuckooChain::AddNX(engine::Context &ctx, const Slice &user_key, const std::string &item, int *added) {
-  key_ = user_key.ToString();
   *added = 0;
   int exists = 0;
   rocksdb::Status s = Exists(ctx, user_key, item, &exists);
@@ -188,7 +190,6 @@ rocksdb::Status CuckooChain::AddNX(engine::Context &ctx, const Slice &user_key, 
 }
 
 rocksdb::Status CuckooChain::Exists(engine::Context &ctx, const Slice &user_key, const std::string &item, int *exists) {
-  key_ = user_key.ToString();
   *exists = 0;
   std::string ns_key = AppendNamespacePrefix(user_key);
 
@@ -197,7 +198,7 @@ rocksdb::Status CuckooChain::Exists(engine::Context &ctx, const Slice &user_key,
   if (s.IsNotFound()) return rocksdb::Status::OK(); // Key doesn't exist, so item doesn't exist
   if (!s.ok()) return s;
 
-  auto cf_keys = getCFKeys(user_key, metadata);
+  std::vector<std::string> cf_keys = getCFKeys(user_key, metadata);
   std::vector<rocksdb::Slice> cf_key_slices;
   cf_key_slices.reserve(cf_keys.size());
   for (const auto &key : cf_keys) {
@@ -223,7 +224,6 @@ rocksdb::Status CuckooChain::Exists(engine::Context &ctx, const Slice &user_key,
 }
 
 rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted) {
-  key_ = user_key.ToString();
   *deleted = 0;
   std::string ns_key = AppendNamespacePrefix(user_key);
 
@@ -232,7 +232,7 @@ rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key,
   if (s.IsNotFound()) return rocksdb::Status::OK();
   if (!s.ok()) return s;
 
-  auto cf_keys = getCFKeys(user_key, metadata);
+  std::vector<std::string> cf_keys = getCFKeys(user_key, metadata);
   std::vector<rocksdb::Slice> cf_key_slices;
   cf_key_slices.reserve(cf_keys.size());
   for (const auto &key : cf_keys) {
@@ -266,7 +266,6 @@ rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key,
 }
 
 rocksdb::Status CuckooChain::Count(engine::Context &ctx, const Slice &user_key, const std::string &item, int *count) {
-  key_ = user_key.ToString();
   *count = 0;
   std::string ns_key = AppendNamespacePrefix(user_key);
 
@@ -275,7 +274,7 @@ rocksdb::Status CuckooChain::Count(engine::Context &ctx, const Slice &user_key, 
   if (s.IsNotFound()) return rocksdb::Status::OK();
   if (!s.ok()) return s;
 
-  auto cf_keys = getCFKeys(user_key, metadata);
+  std::vector<std::string> cf_keys = getCFKeys(user_key, metadata);
   std::vector<rocksdb::Slice> cf_key_slices;
   cf_key_slices.reserve(cf_keys.size());
   for (const auto &key : cf_keys) {
@@ -298,7 +297,6 @@ rocksdb::Status CuckooChain::Count(engine::Context &ctx, const Slice &user_key, 
 }
 
 rocksdb::Status CuckooChain::Info(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata *metadata) {
-  key_ = user_key.ToString();
   std::string ns_key = AppendNamespacePrefix(user_key);
   return getCuckooChainMetadata(ctx, ns_key, metadata);
 }

@@ -59,8 +59,7 @@ class CuckooChain : public Database {
   rocksdb::Status getCuckooChainMetadata(engine::Context &ctx, const Slice &ns_key, CuckooChainMetadata *metadata);
   std::string getCFKey(const Slice &ns_key, const CuckooChainMetadata &metadata, uint16_t filter_index);
   std::vector<std::string> getCFKeys(const Slice &user_key, const CuckooChainMetadata &metadata);
-  rocksdb::Status expand(engine::Context &ctx, CuckooChainMetadata &metadata);
-  std::string key_;
+  rocksdb::Status expand(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata &metadata);
 }; 
 
 }  // namespace redis
