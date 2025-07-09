@@ -61,6 +61,12 @@ class CuckooFilter {
   // Check if an item exists in the filter
   bool Contains(const std::string &item) const;
 
+  // Delete an item from the filter
+  bool Delete(const std::string &item);
+
+  // Count occurrences of an item in the filter
+  size_t Count(const std::string &item) const;
+
  private:
   // Hashing functions
   uint64_t Hash(const std::string &item) const;

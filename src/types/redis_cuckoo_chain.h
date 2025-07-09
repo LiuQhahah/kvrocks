@@ -30,6 +30,7 @@ namespace redis {
 const uint32_t kCFDefaultCapacity = 1024;
 const uint8_t kCFDefaultBucketSize = 2;
 const uint16_t kCFDefaultMaxIterations = 500;
+const uint8_t kCFDefaultExpansion = 1;
 
 enum class CuckooFilterAddResult {
   kOk,
@@ -37,16 +38,29 @@ enum class CuckooFilterAddResult {
   kFull,
 };
 
+enum class CuckooFilterDelResult {
+  kOk,
+  kNotFound,
+};
+
 class CuckooChain : public Database {
  public:
   CuckooChain(engine::Storage *storage, const std::string &ns) : Database(storage, ns) {}
   rocksdb::Status Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity, uint8_t bucket_size,
-                          uint16_t max_iterations);
+                          uint16_t max_iterations, uint8_t expansion);
   rocksdb::Status Add(engine::Context &ctx, const Slice &user_key, const std::string &item, CuckooFilterAddResult *ret);
+  rocksdb::Status AddNX(engine::Context &ctx, const Slice &user_key, const std::string &item, int *added);
+  rocksdb::Status Exists(engine::Context &ctx, const Slice &user_key, const std::string &item, int *exists);
+  rocksdb::Status Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted);
+  rocksdb::Status Count(engine::Context &ctx, const Slice &user_key, const std::string &item, int *count);
+  rocksdb::Status Info(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata *metadata);
 
  private:
   rocksdb::Status getCuckooChainMetadata(engine::Context &ctx, const Slice &ns_key, CuckooChainMetadata *metadata);
   std::string getCFKey(const Slice &ns_key, const CuckooChainMetadata &metadata, uint16_t filter_index);
+  std::vector<std::string> getCFKeys(const Slice &user_key, const CuckooChainMetadata &metadata);
+  rocksdb::Status expand(engine::Context &ctx, CuckooChainMetadata &metadata);
+  std::string key_;
 }; 
 
 }  // namespace redis

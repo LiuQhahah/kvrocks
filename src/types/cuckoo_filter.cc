@@ -109,9 +109,11 @@ bool CuckooFilter::Add(const std::string &item) {
     // Randomly choose an entry to kick out from the current bucket
     uint32_t kick_pos = dist(rng_);
     uint32_t offset = current_bucket_index * bucket_size_;
-    
+
     // Swap the fingerprint to be inserted with the kicked one
-    std::swap(data_[offset + kick_pos], current_fingerprint);
+    char temp = data_[offset + kick_pos];
+    data_[offset + kick_pos] = current_fingerprint;
+    current_fingerprint = temp;
 
     // Calculate the alternate bucket for the kicked fingerprint
     current_bucket_index = GetAltBucketIndex(current_bucket_index, current_fingerprint);
@@ -140,6 +142,46 @@ bool CuckooFilter::Contains(const std::string &item) const {
   }
 
   return false;
+}
+
+bool CuckooFilter::Delete(const std::string &item) {
+  uint64_t item_hash = Hash(item);
+  uint8_t fingerprint = GenerateFingerprint(item_hash);
+  uint32_t bucket_index1 = GetBucketIndex(item_hash);
+  uint32_t bucket_index2 = GetAltBucketIndex(bucket_index1, fingerprint);
+
+  if (DeleteFingerprint(fingerprint, bucket_index1)) {
+    return true;
+  }
+  if (DeleteFingerprint(fingerprint, bucket_index2)) {
+    return true;
+  }
+
+  return false;
+}
+
+size_t CuckooFilter::Count(const std::string &item) const {
+  uint64_t item_hash = Hash(item);
+  uint8_t fingerprint = GenerateFingerprint(item_hash);
+  uint32_t bucket_index1 = GetBucketIndex(item_hash);
+  uint32_t bucket_index2 = GetAltBucketIndex(bucket_index1, fingerprint);
+
+  size_t count = 0;
+  uint32_t offset1 = bucket_index1 * bucket_size_;
+  for (uint8_t i = 0; i < bucket_size_; ++i) {
+    if (data_[offset1 + i] == fingerprint) {
+      count++;
+    }
+  }
+
+  uint32_t offset2 = bucket_index2 * bucket_size_;
+  for (uint8_t i = 0; i < bucket_size_; ++i) {
+    if (data_[offset2 + i] == fingerprint) {
+      count++;
+    }
+  }
+
+  return count;
 }
 
 }  // namespace redis

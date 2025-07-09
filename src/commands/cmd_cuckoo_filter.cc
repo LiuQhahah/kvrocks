@@ -48,6 +48,10 @@ class CommandCFReserve : public Commander {
         auto parse_max_iterations = parser.TakeInt<uint16_t>();
         if (!parse_max_iterations.IsOK()) return parse_max_iterations.ToStatus();
         max_iterations_ = parse_max_iterations.GetValue();
+      } else if (parser.EatEqICase("EXPANSION")) {
+        auto parse_expansion = parser.TakeInt<uint8_t>();
+        if (!parse_expansion.IsOK()) return parse_expansion.ToStatus();
+        expansion_ = parse_expansion.GetValue();
       } else {
         return {Status::RedisParseErr, errInvalidSyntax};
       }
@@ -58,7 +62,7 @@ class CommandCFReserve : public Commander {
 
   Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
     redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
-    auto s = cuckoo_db.Reserve(ctx, args_[1], capacity_, bucket_size_, max_iterations_);
+    auto s = cuckoo_db.Reserve(ctx, args_[1], capacity_, bucket_size_, max_iterations_, expansion_);
     if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
 
     *output = redis::RESP_OK;
@@ -69,6 +73,7 @@ class CommandCFReserve : public Commander {
   uint32_t capacity_ = kCFDefaultCapacity;
   uint8_t bucket_size_ = kCFDefaultBucketSize;
   uint16_t max_iterations_ = kCFDefaultMaxIterations;
+  uint8_t expansion_ = kCFDefaultExpansion;
 };
 
 class CommandCFAdd : public Commander {
@@ -95,7 +100,110 @@ class CommandCFAdd : public Commander {
   }
 };
 
+class CommandCFAddNX : public Commander {
+ public:
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    int added = 0;
+    auto s = cuckoo_db.AddNX(ctx, args_[1], args_[2], &added);
+    if (s.IsAborted()) return {Status::RedisExecErr, s.ToString()};
+    if (!s.ok() && !s.IsNotFound()) return {Status::RedisExecErr, s.ToString()};
+    if (s.IsNotFound()) {
+      *output = redis::Error({Status::NotFound, errKeyNotFound});
+      return Status::OK();
+    }
+
+    *output = redis::Integer(added);
+    return Status::OK();
+  }
+};
+
+class CommandCFExists : public Commander {
+ public:
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    int exists = 0;
+    auto s = cuckoo_db.Exists(ctx, args_[1], args_[2], &exists);
+    if (!s.ok() && !s.IsNotFound()) return {Status::RedisExecErr, s.ToString()};
+    if (s.IsNotFound()) {
+      *output = redis::Integer(0);
+      return Status::OK();
+    }
+
+    *output = redis::Integer(exists);
+    return Status::OK();
+  }
+};
+
+class CommandCFDel : public Commander {
+ public:
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    int deleted = 0;
+    auto s = cuckoo_db.Delete(ctx, args_[1], args_[2], &deleted);
+    if (!s.ok() && !s.IsNotFound()) return {Status::RedisExecErr, s.ToString()};
+    if (s.IsNotFound()) {
+      *output = redis::Integer(0);
+      return Status::OK();
+    }
+
+    *output = redis::Integer(deleted);
+    return Status::OK();
+  }
+};
+
+class CommandCFCount : public Commander {
+ public:
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    int count = 0;
+    auto s = cuckoo_db.Count(ctx, args_[1], args_[2], &count);
+    if (!s.ok() && !s.IsNotFound()) return {Status::RedisExecErr, s.ToString()};
+    if (s.IsNotFound()) {
+      *output = redis::Integer(0);
+      return Status::OK();
+    }
+
+    *output = redis::Integer(count);
+    return Status::OK();
+  }
+};
+
+class CommandCFInfo : public Commander {
+ public:
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    CuckooChainMetadata metadata;
+    auto s = cuckoo_db.Info(ctx, args_[1], &metadata);
+    if (!s.ok() && !s.IsNotFound()) return {Status::RedisExecErr, s.ToString()};
+    if (s.IsNotFound()) {
+      *output = redis::Error({Status::NotFound, errKeyNotFound});
+      return Status::OK();
+    }
+
+    std::vector<std::string> infos;
+    infos.push_back("Capacity");
+    infos.push_back(std::to_string(metadata.capacity));
+    infos.push_back("Size");
+    infos.push_back(std::to_string(metadata.size));
+    infos.push_back("BucketSize");
+    infos.push_back(std::to_string(metadata.bucket_size));
+    infos.push_back("MaxIterations");
+    infos.push_back(std::to_string(metadata.max_iterations));
+    infos.push_back("NumFilters");
+    infos.push_back(std::to_string(metadata.n_filters));
+
+    *output = redis::Array(infos);
+    return Status::OK();
+  }
+};
+
 REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CommandCFReserve>("cf.reserve", -3, "write", 1, 1, 1),
-                        MakeCmdAttr<CommandCFAdd>("cf.add", 3, "write", 1, 1, 1), )
+                        MakeCmdAttr<CommandCFAdd>("cf.add", 3, "write", 1, 1, 1),
+                        MakeCmdAttr<CommandCFAddNX>("cf.addnx", 3, "write", 1, 1, 1),
+                        MakeCmdAttr<CommandCFExists>("cf.exists", 3, "read-only", 1, 1, 1),
+                        MakeCmdAttr<CommandCFDel>("cf.del", 3, "write", 1, 1, 1),
+                        MakeCmdAttr<CommandCFCount>("cf.count", 3, "read-only", 1, 1, 1),
+                        MakeCmdAttr<CommandCFInfo>("cf.info", 2, "read-only", 1, 1, 1), )
 
 }  // namespace redis
