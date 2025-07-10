@@ -47,6 +47,10 @@ std::vector<std::string> CuckooChain::getCFKeys(const Slice &user_key, const Cuc
 
 rocksdb::Status CuckooChain::Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity,
                                      uint8_t bucket_size, uint16_t max_iterations, uint8_t expansion) {
+  if (capacity <= 0) {
+    return rocksdb::Status::InvalidArgument("capacity should be larger than 0");
+  }
+
   std::string ns_key = AppendNamespacePrefix(user_key);
 
   CuckooChainMetadata metadata;
