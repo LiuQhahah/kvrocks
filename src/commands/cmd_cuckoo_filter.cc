@@ -193,7 +193,7 @@ class CommandCFInfo : public Commander {
     infos.push_back("NumFilters");
     infos.push_back(std::to_string(metadata.n_filters));
 
-    *output = redis::Array(infos);
+    *output = redis::ArrayOfBulkStrings(infos);
     return Status::OK();
   }
 };
