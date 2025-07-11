@@ -174,10 +174,13 @@ size_t CuckooFilter::Count(const std::string &item) const {
     }
   }
 
-  uint32_t offset2 = bucket_index2 * bucket_size_;
-  for (uint8_t i = 0; i < bucket_size_; ++i) {
-    if (data_[offset2 + i] == fingerprint) {
-      count++;
+  // Only check the second bucket if it's different from the first one
+  if (bucket_index1 != bucket_index2) {
+    uint32_t offset2 = bucket_index2 * bucket_size_;
+    for (uint8_t i = 0; i < bucket_size_; ++i) {
+      if (data_[offset2 + i] == fingerprint) {
+        count++;
+      }
     }
   }
 
