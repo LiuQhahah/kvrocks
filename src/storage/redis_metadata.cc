@@ -470,6 +470,7 @@ void CuckooChainMetadata::Encode(std::string *dst) const {
   PutFixed8(dst, bucket_size);
   PutFixed16(dst, max_iterations);
   PutFixed32(dst, table_size);
+  PutFixed64(dst, num_deleted_items);
 }
 
 rocksdb::Status CuckooChainMetadata::Decode(Slice *input) {
@@ -478,8 +479,8 @@ rocksdb::Status CuckooChainMetadata::Decode(Slice *input) {
   }
 
   // Check for minimum size required for all fields
-  // n_filters (2) + expansion (2) + capacity (4) + bucket_size (1) + max_iterations (2) + table_size (4) = 15 bytes
-  if (input->size() < 15) {
+  // n_filters (2) + expansion (2) + capacity (4) + bucket_size (1) + max_iterations (2) + table_size (4) + num_deleted_items (8) = 23 bytes
+  if (input->size() < 23) {
     return rocksdb::Status::InvalidArgument(kErrMetadataTooShort);
   }
 
@@ -490,6 +491,7 @@ rocksdb::Status CuckooChainMetadata::Decode(Slice *input) {
   GetFixed8(input, &bucket_size);
   GetFixed16(input, &max_iterations);
   GetFixed32(input, &table_size);
+  GetFixed64(input, &num_deleted_items);
 
   return rocksdb::Status::OK();
 }

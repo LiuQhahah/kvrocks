@@ -191,7 +191,7 @@ class CommandCFInfo : public Commander {
     infos.push_back("Number of items inserted");
     infos.push_back(std::to_string(metadata.size));
     infos.push_back("Number of items deleted");
-    infos.push_back(std::to_string(0)); // Not directly available in metadata
+    infos.push_back(std::to_string(metadata.num_deleted_items));
     infos.push_back("Bucket size");
     infos.push_back(std::to_string(metadata.bucket_size));
     infos.push_back("Expansion rate");

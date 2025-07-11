@@ -254,6 +254,7 @@ rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key,
     CuckooFilter cuckoo_filter(cf_data, metadata.bucket_size, metadata.max_iterations);
     if (cuckoo_filter.Delete(item)) {
       metadata.size--;
+      metadata.num_deleted_items++; // Increment deleted items count
       auto batch = storage_->GetWriteBatchBase();
       WriteBatchLogData log_data(kRedisCuckooFilter, {"DEL"});
       batch->PutLogData(log_data.Encode());

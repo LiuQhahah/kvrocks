@@ -313,9 +313,10 @@ class CuckooChainMetadata : public Metadata {
   uint8_t bucket_size;
   uint16_t max_iterations;
   uint32_t table_size;
+  uint64_t num_deleted_items; // New field to record number of items deleted
 
   explicit CuckooChainMetadata(bool generate_version = true)
-      : Metadata(kRedisCuckooFilter, generate_version) {}
+      : Metadata(kRedisCuckooFilter, generate_version), num_deleted_items(0) {}
 
   void Encode(std::string *dst) const override;
   using Metadata::Decode;
