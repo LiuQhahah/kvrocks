@@ -182,16 +182,22 @@ class CommandCFInfo : public Commander {
     }
 
     std::vector<std::string> infos;
-    infos.push_back("Capacity");
-    infos.push_back(std::to_string(metadata.capacity));
     infos.push_back("Size");
     infos.push_back(std::to_string(metadata.size));
-    infos.push_back("BucketSize");
-    infos.push_back(std::to_string(metadata.bucket_size));
-    infos.push_back("MaxIterations");
-    infos.push_back(std::to_string(metadata.max_iterations));
-    infos.push_back("NumFilters");
+    infos.push_back("Number of buckets");
+    infos.push_back(std::to_string(metadata.table_size));
+    infos.push_back("Number of filters");
     infos.push_back(std::to_string(metadata.n_filters));
+    infos.push_back("Number of items inserted");
+    infos.push_back(std::to_string(metadata.size));
+    infos.push_back("Number of items deleted");
+    infos.push_back(std::to_string(0)); // Not directly available in metadata
+    infos.push_back("Bucket size");
+    infos.push_back(std::to_string(metadata.bucket_size));
+    infos.push_back("Expansion rate");
+    infos.push_back(std::to_string(metadata.expansion));
+    infos.push_back("Max iterations");
+    infos.push_back(std::to_string(metadata.max_iterations));
 
     *output = redis::ArrayOfBulkStrings(infos);
     return Status::OK();
