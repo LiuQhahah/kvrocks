@@ -37,12 +37,13 @@ std::string CuckooChain::getCFKey(const Slice &ns_key, const CuckooChainMetadata
 }
 
 std::vector<std::string> CuckooChain::getCFKeys(const Slice &user_key, const CuckooChainMetadata &metadata) {
-  std::vector<std::string> keys;
+  std::vector<std::string> cf_key_list;
+  cf_key_list.reserve(metadata.n_filters);
   std::string ns_key = AppendNamespacePrefix(user_key);
   for (uint16_t i = 0; i < metadata.n_filters; ++i) {
-    keys.push_back(getCFKey(ns_key, metadata, i));
+    cf_key_list.emplace_back(getCFKey(ns_key, metadata, i));
   }
-  return keys;
+  return cf_key_list;
 }
 
 rocksdb::Status CuckooChain::Reserve(engine::Context &ctx, const Slice &user_key, uint32_t capacity,
@@ -226,6 +227,50 @@ rocksdb::Status CuckooChain::Exists(engine::Context &ctx, const Slice &user_key,
 
   return rocksdb::Status::OK();
 }
+
+
+rocksdb::Status CuckooChain::MExists(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                                 std::vector<bool> *exists) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
+
+  CuckooChainMetadata metadata;
+  rocksdb::Status s = getCuckooChainMetadata(ctx, ns_key, &metadata);
+  if (s.IsNotFound()) {
+    std::fill(exists->begin(), exists->end(), false);
+    return rocksdb::Status::OK();
+  }
+  if (!s.ok()) return s;
+
+  std::vector<std::string> cf_keys = getCFKeys(user_key, metadata);
+  std::vector<rocksdb::Slice> cf_key_slices;
+  cf_key_slices.reserve(cf_keys.size());
+  for (const auto &key : cf_keys) {
+    cf_key_slices.emplace_back(key);
+  }
+
+  std::vector<rocksdb::PinnableSlice> cf_data_slices(cf_keys.size());
+  std::vector<rocksdb::Status> statuses(cf_keys.size());
+  storage_->MultiGet(ctx, ctx.GetReadOptions(), storage_->GetCFHandle(ColumnFamilyID::PrimarySubkey),
+                     cf_key_slices.size(), cf_key_slices.data(), cf_data_slices.data(), statuses.data());
+
+  for (size_t i = 0; i < items.size(); ++i) {
+    for (size_t j = 0; j < cf_keys.size(); ++j) {
+      if (!statuses[j].ok()) continue;
+      std::string cf_data = cf_data_slices[j].ToString();
+      CuckooFilter cuckoo_filter(cf_data, metadata.bucket_size, metadata.max_iterations);
+      if (cuckoo_filter.Contains(items[i])) {
+        (*exists)[i] = true;
+        break;
+      }
+    }
+  }
+
+  return rocksdb::Status::OK();
+} 
+
+
+
+
 
 rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted) {
   *deleted = 0;

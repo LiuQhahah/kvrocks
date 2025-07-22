@@ -51,6 +51,8 @@ class CuckooChain : public Database {
   rocksdb::Status Add(engine::Context &ctx, const Slice &user_key, const std::string &item, CuckooFilterAddResult *ret);
   rocksdb::Status AddNX(engine::Context &ctx, const Slice &user_key, const std::string &item, int *added);
   rocksdb::Status Exists(engine::Context &ctx, const Slice &user_key, const std::string &item, int *exists);
+  rocksdb::Status MExists(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                          std::vector<bool> *exists);
   rocksdb::Status Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted);
   rocksdb::Status Count(engine::Context &ctx, const Slice &user_key, const std::string &item, int *count);
   rocksdb::Status Info(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata *metadata);
@@ -60,6 +62,6 @@ class CuckooChain : public Database {
   std::string getCFKey(const Slice &ns_key, const CuckooChainMetadata &metadata, uint16_t filter_index);
   std::vector<std::string> getCFKeys(const Slice &user_key, const CuckooChainMetadata &metadata);
   rocksdb::Status expand(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata &metadata);
-}; 
+};
 
 }  // namespace redis
