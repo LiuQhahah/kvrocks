@@ -340,6 +340,35 @@ rocksdb::Status CuckooChain::InsertNX(engine::Context &ctx, const Slice &user_ke
   return rocksdb::Status::OK();
 }
 
+rocksdb::Status CuckooChain::ScanDump(engine::Context &ctx, const Slice &user_key, uint64_t iter, uint64_t *next_iter, std::string *data) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
+
+  CuckooChainMetadata metadata;
+  rocksdb::Status s = getCuckooChainMetadata(ctx, ns_key, &metadata);
+  if (s.IsNotFound()) {
+    *next_iter = 0;
+    data->clear();
+    return rocksdb::Status::OK();
+  }
+  if (!s.ok()) return s;
+
+  if (iter >= metadata.n_filters) { // All filters scanned
+    *next_iter = 0;
+    data->clear();
+    return rocksdb::Status::OK();
+  }
+
+  std::string cf_key = getCFKey(ns_key, metadata, static_cast<uint16_t>(iter));
+  rocksdb::PinnableSlice cf_data_slice;
+  s = storage_->Get(ctx, ctx.GetReadOptions(), cf_key, &cf_data_slice);
+  if (!s.ok()) return s;
+
+  *data = cf_data_slice.ToString();
+  *next_iter = iter + 1;
+
+  return rocksdb::Status::OK();
+}
+
 rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted) {
   *deleted = 0;
   std::string ns_key = AppendNamespacePrefix(user_key);
