@@ -53,6 +53,8 @@ class CuckooChain : public Database {
   rocksdb::Status Exists(engine::Context &ctx, const Slice &user_key, const std::string &item, int *exists);
   rocksdb::Status MExists(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
                           std::vector<bool> *exists);
+  rocksdb::Status Insert(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                         uint32_t capacity, bool no_create, std::vector<int> *results);
   rocksdb::Status Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted);
   rocksdb::Status Count(engine::Context &ctx, const Slice &user_key, const std::string &item, int *count);
   rocksdb::Status Info(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata *metadata);

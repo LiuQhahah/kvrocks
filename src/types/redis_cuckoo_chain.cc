@@ -266,11 +266,47 @@ rocksdb::Status CuckooChain::MExists(engine::Context &ctx, const Slice &user_key
   }
 
   return rocksdb::Status::OK();
-} 
+}
 
+rocksdb::Status CuckooChain::Insert(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                                   uint32_t capacity, bool no_create, std::vector<int> *results) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
 
+  CuckooChainMetadata metadata;
+  rocksdb::Status s = getCuckooChainMetadata(ctx, ns_key, &metadata);
+  if (s.IsNotFound()) {
+    if (no_create) {
+      std::fill(results->begin(), results->end(), 0);
+      return rocksdb::Status::OK();
+    }
+    // Create the filter if not exists and no_create is false
+    s = Reserve(ctx, user_key, capacity, kCFDefaultBucketSize, kCFDefaultMaxIterations, kCFDefaultExpansion);
+    if (!s.ok()) return s;
+    s = getCuckooChainMetadata(ctx, ns_key, &metadata); // Re-read metadata after creation
+    if (!s.ok()) return s;
+  } else if (!s.ok()) {
+    return s;
+  }
 
+  results->assign(items.size(), 0);
+  for (size_t i = 0; i < items.size(); ++i) {
+    CuckooFilterAddResult add_ret;
+    s = Add(ctx, user_key, items[i], &add_ret);
+    if (!s.ok()) return s;
 
+    if (add_ret == CuckooFilterAddResult::kOk) {
+      (*results)[i] = 1;
+    } else if (add_ret == CuckooFilterAddResult::kExist) {
+      (*results)[i] = 0;
+    } else if (add_ret == CuckooFilterAddResult::kFull) {
+      // This case should ideally be handled by Add() internally via expansion
+      // If it still returns kFull, it means expansion failed or filter is truly full
+      return rocksdb::Status::Aborted("Cuckoo filter is full and cannot expand");
+    }
+  }
+
+  return rocksdb::Status::OK();
+}
 
 rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted) {
   *deleted = 0;

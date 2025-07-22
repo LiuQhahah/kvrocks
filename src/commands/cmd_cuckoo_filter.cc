@@ -163,6 +163,53 @@ class CommandCFMExists : public Commander {
   std::vector<std::string> items_;
 };
 
+class CommandCFInsert : public Commander {
+ public:
+  Status Parse(const std::vector<std::string> &args) override {
+    CommandParser parser(args, 2); // Start parsing from the third argument (after key)
+    while (parser.Good()) {
+      if (parser.EatEqICase("CAPACITY")) {
+        auto parse_capacity = parser.TakeInt<unsigned int>();
+        if (!parse_capacity.IsOK()) return parse_capacity.ToStatus();
+        capacity_ = *parse_capacity;
+        if (capacity_ <= 0) {
+          return {Status::RedisParseErr, "capacity should be larger than 0"};
+        }
+      } else if (parser.EatEqICase("NOCREATE")) {
+        no_create_ = true;
+      } else if (parser.EatEqICase("ITEMS")) {
+        while (parser.Good()) {
+          items_.emplace_back(GET_OR_RET(parser.TakeStr()));
+        }
+      } else {
+        return {Status::RedisParseErr, errInvalidSyntax};
+      }
+    }
+    if (items_.empty()) {
+      return {Status::RedisParseErr, "at least one item must be specified"};
+    }
+    return Commander::Parse(args);
+  }
+
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    std::vector<int> results(items_.size());
+    auto s = cuckoo_db.Insert(ctx, args_[1], items_, capacity_, no_create_, &results);
+    if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
+
+    *output = redis::MultiLen(results.size());
+    for (int res : results) {
+      *output += redis::Integer(res);
+    }
+    return Status::OK();
+  }
+
+ private:
+  uint32_t capacity_ = kCFDefaultCapacity;
+  bool no_create_ = false;
+  std::vector<std::string> items_;
+};
+
 class CommandCFDel : public Commander {
  public:
   Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
@@ -239,6 +286,7 @@ REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CommandCFReserve>("cf.reserve"
                         MakeCmdAttr<CommandCFDel>("cf.del", 3, "write", 1, 1, 1),
                         MakeCmdAttr<CommandCFCount>("cf.count", 3, "read-only", 1, 1, 1),
                         MakeCmdAttr<CommandCFMExists>("cf.mexists", -3, "read-only", 1, 1, 1),
+                        MakeCmdAttr<CommandCFInsert>("cf.insert", -5, "write", 1, 1, 1),
                         MakeCmdAttr<CommandCFInfo>("cf.info", 2, "read-only", 1, 1, 1), )
 
 }  // namespace redis
