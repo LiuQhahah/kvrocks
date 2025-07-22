@@ -308,6 +308,38 @@ rocksdb::Status CuckooChain::Insert(engine::Context &ctx, const Slice &user_key,
   return rocksdb::Status::OK();
 }
 
+rocksdb::Status CuckooChain::InsertNX(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
+                                    uint32_t capacity, bool no_create, std::vector<int> *results) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
+
+  CuckooChainMetadata metadata;
+  rocksdb::Status s = getCuckooChainMetadata(ctx, ns_key, &metadata);
+  if (s.IsNotFound()) {
+    if (no_create) {
+      std::fill(results->begin(), results->end(), 0);
+      return rocksdb::Status::OK();
+    }
+    // Create the filter if not exists and no_create is false
+    s = Reserve(ctx, user_key, capacity, kCFDefaultBucketSize, kCFDefaultMaxIterations, kCFDefaultExpansion);
+    if (!s.ok()) return s;
+    s = getCuckooChainMetadata(ctx, ns_key, &metadata); // Re-read metadata after creation
+    if (!s.ok()) return s;
+  } else if (!s.ok()) {
+    return s;
+  }
+
+  results->assign(items.size(), 0);
+  for (size_t i = 0; i < items.size(); ++i) {
+    int added = 0;
+    s = AddNX(ctx, user_key, items[i], &added);
+    if (!s.ok()) return s;
+
+    (*results)[i] = added;
+  }
+
+  return rocksdb::Status::OK();
+}
+
 rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted) {
   *deleted = 0;
   std::string ns_key = AppendNamespacePrefix(user_key);
