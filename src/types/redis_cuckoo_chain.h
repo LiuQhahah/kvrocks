@@ -58,6 +58,7 @@ class CuckooChain : public Database {
   rocksdb::Status InsertNX(engine::Context &ctx, const Slice &user_key, const std::vector<std::string> &items,
                            uint32_t capacity, bool no_create, std::vector<int> *results);
   rocksdb::Status ScanDump(engine::Context &ctx, const Slice &user_key, uint64_t iter, uint64_t *next_iter, std::string *data);
+  rocksdb::Status LoadChunk(engine::Context &ctx, const Slice &user_key, uint64_t iter, const std::string &data);
   rocksdb::Status Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted);
   rocksdb::Status Count(engine::Context &ctx, const Slice &user_key, const std::string &item, int *count);
   rocksdb::Status Info(engine::Context &ctx, const Slice &user_key, CuckooChainMetadata *metadata);

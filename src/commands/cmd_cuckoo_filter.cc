@@ -292,6 +292,35 @@ class CommandCFScanDump : public Commander {
   uint64_t iter_ = 0;
 };
 
+class CommandCFLoadChunk : public Commander {
+ public:
+  Status Parse(const std::vector<std::string> &args) override {
+    if (args.size() != 4) { // CF.LOADCHUNK key iterator data
+      return {Status::RedisParseErr, "wrong number of arguments"};
+    }
+    auto parse_iter = ParseInt<uint64_t>(args[2], 10);
+    if (!parse_iter) {
+      return {Status::RedisParseErr, "invalid iterator"};
+    }
+    iter_ = *parse_iter;
+    data_ = args[3];
+    return Commander::Parse(args);
+  }
+
+  Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
+    redis::CuckooChain cuckoo_db(srv->storage, conn->GetNamespace());
+    auto s = cuckoo_db.LoadChunk(ctx, args_[1], iter_, data_);
+    if (!s.ok()) return {Status::RedisExecErr, s.ToString()};
+
+    *output = redis::RESP_OK;
+    return Status::OK();
+  }
+
+ private:
+  uint64_t iter_ = 0;
+  std::string data_;
+};
+
 class CommandCFDel : public Commander {
  public:
   Status Execute(engine::Context &ctx, Server *srv, Connection *conn, std::string *output) override {
@@ -371,6 +400,7 @@ REDIS_REGISTER_COMMANDS(CuckooFilter, MakeCmdAttr<CommandCFReserve>("cf.reserve"
                         MakeCmdAttr<CommandCFInsert>("cf.insert", -5, "write", 1, 1, 1),
                         MakeCmdAttr<CommandCFInsertNX>("cf.insertnx", -5, "write", 1, 1, 1),
                         MakeCmdAttr<CommandCFScanDump>("cf.scandump", 3, "read-only", 1, 1, 1),
+                        MakeCmdAttr<CommandCFLoadChunk>("cf.loadchunk", 4, "write", 1, 1, 1),
                         MakeCmdAttr<CommandCFInfo>("cf.info", 2, "read-only", 1, 1, 1), )
 
 }  // namespace redis

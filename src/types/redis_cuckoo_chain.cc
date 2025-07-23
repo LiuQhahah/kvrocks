@@ -369,6 +369,30 @@ rocksdb::Status CuckooChain::ScanDump(engine::Context &ctx, const Slice &user_ke
   return rocksdb::Status::OK();
 }
 
+rocksdb::Status CuckooChain::LoadChunk(engine::Context &ctx, const Slice &user_key, uint64_t iter, const std::string &data) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
+
+  CuckooChainMetadata metadata;
+  rocksdb::Status s = getCuckooChainMetadata(ctx, ns_key, &metadata);
+  if (!s.ok()) return s; // Should exist for LOADCHUNK
+
+  if (iter >= metadata.n_filters) {
+    return rocksdb::Status::InvalidArgument("iterator out of bounds");
+  }
+
+  std::string cf_key = getCFKey(ns_key, metadata, static_cast<uint16_t>(iter));
+
+  auto batch = storage_->GetWriteBatchBase();
+  WriteBatchLogData log_data(kRedisCuckooFilter, {"LOADCHUNK"});
+  s = batch->PutLogData(log_data.Encode());
+  if (!s.ok()) return s;
+
+  s = batch->Put(cf_key, data);
+  if (!s.ok()) return s;
+
+  return storage_->Write(ctx, storage_->DefaultWriteOptions(), batch->GetWriteBatch());
+}
+
 rocksdb::Status CuckooChain::Delete(engine::Context &ctx, const Slice &user_key, const std::string &item, int *deleted) {
   *deleted = 0;
   std::string ns_key = AppendNamespacePrefix(user_key);
