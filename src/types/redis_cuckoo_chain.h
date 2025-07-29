@@ -29,7 +29,7 @@ namespace redis {
 // Default values for Cuckoo Filter
 const uint32_t kCFDefaultCapacity = 1024;
 const uint8_t kCFDefaultBucketSize = 2;
-const uint16_t kCFDefaultMaxIterations = 500;
+const uint16_t kCFDefaultMaxIterations = 20;
 const uint8_t kCFDefaultExpansion = 1;
 
 enum class CuckooFilterAddResult {
