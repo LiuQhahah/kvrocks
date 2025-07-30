@@ -368,10 +368,12 @@ class CommandCFInfo : public Commander {
     }
 
     std::vector<std::string> infos;
+    infos.push_back("Capacity");
+    infos.push_back(std::to_string(metadata.GetTotalCapacity()));
     infos.push_back("Size");
     infos.push_back(std::to_string(metadata.size));
     infos.push_back("Number of buckets");
-    infos.push_back(std::to_string(metadata.table_size));
+    infos.push_back(std::to_string(metadata.GetTotalTableSize()));
     infos.push_back("Number of filters");
     infos.push_back(std::to_string(metadata.n_filters));
     infos.push_back("Number of items inserted");

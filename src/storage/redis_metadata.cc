@@ -27,10 +27,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
 
 #include "cluster/redis_slot.h"
 #include "encoding.h"
 #include "time_util.h"
+#include "types/cuckoo_filter.h"
 
 // 52 bit for microseconds and 11 bit for counter
 const int VersionCounterBits = 11;
@@ -465,11 +467,9 @@ void CuckooChainMetadata::Encode(std::string *dst) const {
 
   PutFixed16(dst, n_filters);
   PutFixed16(dst, expansion);
-
-  PutFixed32(dst, capacity);
+  PutFixed64(dst, base_capacity);
   PutFixed8(dst, bucket_size);
   PutFixed16(dst, max_iterations);
-  PutFixed32(dst, table_size);
   PutFixed64(dst, num_deleted_items);
 }
 
@@ -478,27 +478,49 @@ rocksdb::Status CuckooChainMetadata::Decode(Slice *input) {
     return s;
   }
 
-  // Check for minimum size required for all fields
-  // n_filters (2) + expansion (2) + capacity (4) + bucket_size (1) + max_iterations (2) + table_size (4) + num_deleted_items (8) = 23 bytes
-  if (input->size() < 23) {
+  if (input->size() < 19) { // 2+2+8+1+2+8 = 23
     return rocksdb::Status::InvalidArgument(kErrMetadataTooShort);
   }
 
   GetFixed16(input, &n_filters);
   GetFixed16(input, &expansion);
-
-  GetFixed32(input, &capacity);
+  GetFixed64(input, &base_capacity);
   GetFixed8(input, &bucket_size);
   GetFixed16(input, &max_iterations);
-  GetFixed32(input, &table_size);
   GetFixed64(input, &num_deleted_items);
 
   return rocksdb::Status::OK();
 }
 
-uint32_t CuckooChainMetadata::GetCapacity() const {
-  // For Cuckoo Filter, capacity is directly stored
-  return capacity;
+uint64_t CuckooChainMetadata::GetTotalCapacity() const {
+  if (expansion == 1) {
+    return base_capacity * n_filters;
+  }
+
+  if (!IsScaling()) { // Catches expansion == 0
+    return base_capacity;
+  }
+
+  // Sum of a geometric progression for expansion > 1
+  uint64_t total_capacity = 0;
+  for (uint16_t i = 0; i < n_filters; ++i) {
+    total_capacity += static_cast<uint64_t>(base_capacity * pow(expansion, i));
+  }
+  return total_capacity;
+}
+
+uint64_t CuckooChainMetadata::GetTotalTableSize() const {
+  uint64_t total_table_size = 0;
+  for (uint16_t i = 0; i < n_filters; ++i) {
+    uint64_t shard_capacity = 0;
+    if (expansion == 1) {
+        shard_capacity = base_capacity;
+    } else {
+        shard_capacity = static_cast<uint64_t>(base_capacity * pow(expansion, i));
+    }
+    total_table_size += redis::CuckooFilter::OptimalTableSize(shard_capacity, bucket_size);
+  }
+  return total_table_size;
 }
 
 void JsonMetadata::Encode(std::string *dst) const {

@@ -309,21 +309,21 @@ class CuckooChainMetadata : public Metadata {
  public:
   uint16_t n_filters;
   uint16_t expansion;
-  uint32_t capacity;
+  uint64_t base_capacity;  // The capacity of the first filter
   uint8_t bucket_size;
   uint16_t max_iterations;
-  uint32_t table_size;
-  uint64_t num_deleted_items; // New field to record number of items deleted
+  uint64_t num_deleted_items;
 
   explicit CuckooChainMetadata(bool generate_version = true)
-      : Metadata(kRedisCuckooFilter, generate_version), num_deleted_items(0) {}
+      : Metadata(kRedisCuckooFilter, generate_version), n_filters(0), expansion(0), base_capacity(0), bucket_size(0), max_iterations(0), num_deleted_items(0) {}
 
   void Encode(std::string *dst) const override;
   using Metadata::Decode;
   rocksdb::Status Decode(Slice *input) override;
 
-  uint32_t GetCapacity() const;
-  bool IsScaling() const { return expansion != 0; };
+  uint64_t GetTotalCapacity() const;
+  uint64_t GetTotalTableSize() const;
+  bool IsScaling() const { return expansion > 0; };
 };
 
 enum class JsonStorageFormat : uint8_t {
