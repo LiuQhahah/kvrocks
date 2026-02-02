@@ -28,13 +28,8 @@
 
 class RedisCuckooFilterTest : public TestBase {
  protected:
-  explicit RedisCuckooFilterTest() : TestBase() {
-    cuckoo_ = std::make_unique<redis::CuckooChain>(storage_.get(), "cuckoo_ns");
-  }
-  ~RedisCuckooFilterTest() override {
-    // Ensure cuckoo_ is destroyed before storage_
-    cuckoo_.reset();
-  }
+  explicit RedisCuckooFilterTest() = default;
+  ~RedisCuckooFilterTest() override = default;
 
   void SetUp() override {
     // Use a unique key for each test to avoid conflicts
@@ -42,7 +37,9 @@ class RedisCuckooFilterTest : public TestBase {
     const ::testing::TestInfo* const test_info =
         ::testing::UnitTest::GetInstance()->current_test_info();
     key_ = std::string("cf_test_") + test_info->name();
+    cuckoo_ = std::make_unique<redis::CuckooChain>(storage_.get(), "cuckoo_ns");
   }
+  void TearDown() override {}
 
   std::unique_ptr<redis::CuckooChain> cuckoo_;
   std::string key_;
@@ -127,7 +124,7 @@ TEST_F(RedisCuckooFilterTest, OptimalNumBucketsCalculation) {
 
 TEST_F(RedisCuckooFilterTest, FingerprintGeneration) {
   // Test fingerprint generation ensures non-zero values in range [1, 255]
-  // Following RedisBloom: fp = hash % 255 + 1
+  // Standard implementation: fp = hash % 255 + 1
   for (uint64_t hash = 0; hash < 1000; ++hash) {
     uint8_t fp = redis::CuckooFilter::GenerateFingerprint(hash);
     ASSERT_GE(fp, 1) << "Fingerprint should be at least 1";
@@ -144,7 +141,7 @@ TEST_F(RedisCuckooFilterTest, FingerprintGeneration) {
 TEST_F(RedisCuckooFilterTest, AlternateBucketCalculation) {
   uint32_t num_buckets = 1024;
 
-  // Test GetAltHash symmetry at hash level (following RedisBloom design)
+  // Test GetAltHash symmetry property
   // h2 = GetAltHash(fp, h1)
   // h1 = GetAltHash(fp, h2)  <- this is the symmetry property
   for (uint64_t hash = 0; hash < 100; ++hash) {
@@ -197,7 +194,7 @@ TEST_F(RedisCuckooFilterTest, HashFunction) {
 
 
 TEST_F(RedisCuckooFilterTest, ReserveTooSmallCapacity) {
-  // Test capacity = 1 (too small, following RedisBloom behavior)
+  // Test capacity = 1 (too small)
   // With load factor 0.955 and bucket_size=4, this would result in 0 buckets
   auto s = cuckoo_->Reserve(*ctx_, key_, 1, 4, 500, 2);
   ASSERT_FALSE(s.ok()) << "Should reject capacity = 1";
@@ -562,4 +559,254 @@ TEST_F(RedisCuckooFilterTest, AddDifferentItemsProduceDifferentHashes) {
 
   // All items should have unique hashes (with very high probability)
   ASSERT_EQ(hashes.size(), items.size()) << "Different items should produce different hashes";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsBasic) {
+  // Reserve and add an item
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  bool added = false;
+  s = cuckoo_->Add(*ctx_, key_, "test_item", &added);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(added);
+
+  // Check if item exists
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, "test_item", &exists);
+  ASSERT_TRUE(s.ok()) << "Failed to check existence: " << s.ToString();
+  ASSERT_TRUE(exists) << "Item should exist";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsNonExistentItem) {
+  // Reserve a filter
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add one item
+  bool added = false;
+  s = cuckoo_->Add(*ctx_, key_, "item1", &added);
+  ASSERT_TRUE(s.ok());
+
+  // Check for a different item that doesn't exist
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, "item2", &exists);
+  ASSERT_TRUE(s.ok());
+  ASSERT_FALSE(exists) << "Item should not exist";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsNonExistentFilter) {
+  // Check existence on non-existent filter should return NotFound
+  bool exists = true;  // Set to true to verify it gets set to false
+  auto s = cuckoo_->Exists(*ctx_, "nonexistent_key", "item", &exists);
+  // Internal API should return NotFound status (command handler converts to 0)
+  ASSERT_TRUE(s.IsNotFound()) << "Internal should return NotFound";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsMultipleItems) {
+  // Reserve a filter and add multiple items
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  std::vector<std::string> items = {"apple", "banana", "cherry", "date", "elderberry"};
+  for (const auto& item : items) {
+    bool added = false;
+    s = cuckoo_->Add(*ctx_, key_, item, &added);
+    ASSERT_TRUE(s.ok());
+  }
+
+  // Check that all items exist
+  for (const auto& item : items) {
+    bool exists = false;
+    s = cuckoo_->Exists(*ctx_, key_, item, &exists);
+    ASSERT_TRUE(s.ok()) << "Failed to check: " << item;
+    ASSERT_TRUE(exists) << "Item should exist: " << item;
+  }
+
+  // Check that non-existent items don't exist
+  std::vector<std::string> non_items = {"fig", "grape", "honeydew"};
+  for (const auto& item : non_items) {
+    bool exists = false;
+    s = cuckoo_->Exists(*ctx_, key_, item, &exists);
+    ASSERT_TRUE(s.ok());
+    // Note: false positives are possible, but with good hash functions they should be rare
+  }
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsDuplicateItems) {
+  // Reserve a filter
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add the same item multiple times
+  std::string item = "duplicate_item";
+  for (int i = 0; i < 3; ++i) {
+    bool added = false;
+    s = cuckoo_->Add(*ctx_, key_, item, &added);
+    ASSERT_TRUE(s.ok());
+  }
+
+  // Check that item exists
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, item, &exists);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(exists) << "Duplicate item should exist";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsEmptyString) {
+  // Reserve a filter
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add empty string
+  bool added = false;
+  s = cuckoo_->Add(*ctx_, key_, "", &added);
+  ASSERT_TRUE(s.ok());
+
+  // Check if empty string exists
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, "", &exists);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(exists) << "Empty string should exist";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsBinaryData) {
+  // Reserve a filter
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add binary data
+  std::string binary_item = std::string("\x00\x01\x02\xFF\xFE", 5);
+  bool added = false;
+  s = cuckoo_->Add(*ctx_, key_, binary_item, &added);
+  ASSERT_TRUE(s.ok());
+
+  // Check if binary data exists
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, binary_item, &exists);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(exists) << "Binary data should exist";
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsAfterExpansion) {
+  // Reserve a small filter with expansion enabled
+  auto s = cuckoo_->Reserve(*ctx_, key_, 10, 2, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add many items to trigger expansion
+  std::vector<std::string> items;
+  for (int i = 0; i < 30; ++i) {
+    items.push_back("item_" + std::to_string(i));
+  }
+
+  for (const auto& item : items) {
+    bool added = false;
+    s = cuckoo_->Add(*ctx_, key_, item, &added);
+    // Some might fail if filter is full, that's ok
+    if (s.ok() && added) {
+      // Verify we can find the item immediately after adding
+      bool exists = false;
+      s = cuckoo_->Exists(*ctx_, key_, item, &exists);
+      ASSERT_TRUE(s.ok());
+      ASSERT_TRUE(exists) << "Item should exist: " << item;
+    }
+  }
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsWithDifferentBucketSizes) {
+  // Test with different bucket sizes
+  std::vector<uint8_t> bucket_sizes = {1, 2, 4, 8};
+
+  for (size_t i = 0; i < bucket_sizes.size(); ++i) {
+    std::string test_key = key_ + "_bucket_" + std::to_string(bucket_sizes[i]);
+    auto s = cuckoo_->Reserve(*ctx_, test_key, 100, bucket_sizes[i], 500, 2);
+    ASSERT_TRUE(s.ok());
+
+    // Add items
+    std::vector<std::string> items = {"item1", "item2", "item3"};
+    for (const auto& item : items) {
+      bool added = false;
+      s = cuckoo_->Add(*ctx_, test_key, item, &added);
+      ASSERT_TRUE(s.ok());
+    }
+
+    // Check existence
+    for (const auto& item : items) {
+      bool exists = false;
+      s = cuckoo_->Exists(*ctx_, test_key, item, &exists);
+      ASSERT_TRUE(s.ok()) << "bucket_size=" << static_cast<int>(bucket_sizes[i]);
+      ASSERT_TRUE(exists) << "Item should exist with bucket_size=" << static_cast<int>(bucket_sizes[i]);
+    }
+  }
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsLongString) {
+  // Reserve a filter
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add a very long string
+  std::string long_item(10000, 'x');
+  bool added = false;
+  s = cuckoo_->Add(*ctx_, key_, long_item, &added);
+  ASSERT_TRUE(s.ok());
+
+  // Check if long string exists
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, long_item, &exists);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(exists) << "Long string should exist";
+
+  // Check a different long string doesn't exist
+  std::string different_long_item(10000, 'y');
+  exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, different_long_item, &exists);
+  ASSERT_TRUE(s.ok());
+  // Note: false positive is possible but unlikely
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsBatchTest) {
+  // Test batch operations with 100 items
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  // Add 100 items
+  for (int x = 0; x < 100; ++x) {
+    bool added = false;
+    s = cuckoo_->Add(*ctx_, key_, std::to_string(x), &added);
+    ASSERT_TRUE(s.ok()) << "Failed to add item " << x;
+  }
+
+  // Verify all 100 items exist
+  for (int x = 0; x < 100; ++x) {
+    bool exists = false;
+    s = cuckoo_->Exists(*ctx_, key_, std::to_string(x), &exists);
+    ASSERT_TRUE(s.ok()) << "Failed to check item " << x;
+    ASSERT_TRUE(exists) << "Item " << x << " should exist";
+  }
+}
+
+TEST_F(RedisCuckooFilterTest, ExistsWithRepeatedInsertions) {
+  // Test that CF.ADD allows duplicate insertions
+  auto s = cuckoo_->Reserve(*ctx_, key_, 1000, 4, 500, 2);
+  ASSERT_TRUE(s.ok());
+
+  std::string item = "k1";
+
+  // Add same item twice
+  bool added = false;
+  s = cuckoo_->Add(*ctx_, key_, item, &added);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(added);
+
+  added = false;
+  s = cuckoo_->Add(*ctx_, key_, item, &added);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(added) << "Should allow duplicate insertions";
+
+  // Check existence
+  bool exists = false;
+  s = cuckoo_->Exists(*ctx_, key_, item, &exists);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(exists) << "Item should exist after duplicate insertions";
 }

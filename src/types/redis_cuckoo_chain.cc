@@ -53,7 +53,7 @@ rocksdb::Status CuckooChain::Reserve(engine::Context &ctx, const Slice &user_key
     return rocksdb::Status::InvalidArgument("capacity must be larger than 0");
   }
 
-  // RedisBloom requires minimum capacity to ensure at least one bucket can be created
+  // Require minimum capacity to ensure at least one bucket can be created
   // With load factor 0.955, capacity=1 and bucket_size=4 results in 0 buckets
   if (capacity < 2) {
     return rocksdb::Status::InvalidArgument("capacity must be at least 2");
@@ -101,7 +101,7 @@ rocksdb::Status CuckooChain::Reserve(engine::Context &ctx, const Slice &user_key
 
   // Create a write batch for atomic operation
   auto batch = storage_->GetWriteBatchBase();
-  WriteBatchLogData log_data(kRedisCuckooFilter, {"CF.RESERVE", user_key.ToString()});
+  WriteBatchLogData log_data(kRedisCuckooFilter, std::vector<std::string>{"CF.RESERVE", user_key.ToString()});
   batch->PutLogData(log_data.Encode());
 
   // Store the metadata
@@ -190,7 +190,7 @@ rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, co
   uint8_t fingerprint = CuckooFilter::GenerateFingerprint(hash);
 
   // Try to insert in each sub-filter (starting from the first/smallest one)
-  // This follows RedisBloom's behavior and is more efficient
+  // This is more efficient as it prioritizes smaller filters first
   for (uint16_t filter_idx = 0; filter_idx < metadata.n_filters; ++filter_idx) {
     // Calculate capacity for this filter using integer power
     uint64_t filter_capacity = metadata.base_capacity * intPow(metadata.expansion, filter_idx);
@@ -228,7 +228,7 @@ rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, co
     if (target_bucket_data != nullptr) {
       // Successfully inserted, write to storage atomically
       auto batch = storage_->GetWriteBatchBase();
-      WriteBatchLogData log_data(kRedisCuckooFilter, {"CF.ADD", user_key.ToString()});
+      WriteBatchLogData log_data(kRedisCuckooFilter, std::vector<std::string>{"CF.ADD", user_key.ToString()});
       batch->PutLogData(log_data.Encode());
       batch->Put(target_bucket_key, *target_bucket_data);
 
@@ -255,7 +255,7 @@ rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, co
   if (s.ok() && inserted) {
     // Update metadata after successful kick-out
     auto batch = storage_->GetWriteBatchBase();
-    WriteBatchLogData log_data(kRedisCuckooFilter, {"CF.ADD", user_key.ToString()});
+    WriteBatchLogData log_data(kRedisCuckooFilter, std::vector<std::string>{"CF.ADD", user_key.ToString()});
     batch->PutLogData(log_data.Encode());
 
     metadata.size++;
@@ -290,7 +290,7 @@ rocksdb::Status CuckooChain::Add(engine::Context &ctx, const Slice &user_key, co
     bucket1_data[0] = fingerprint;
 
     auto batch = storage_->GetWriteBatchBase();
-    WriteBatchLogData log_data(kRedisCuckooFilter, {"CF.ADD", user_key.ToString()});
+    WriteBatchLogData log_data(kRedisCuckooFilter, std::vector<std::string>{"CF.ADD", user_key.ToString()});
     batch->PutLogData(log_data.Encode());
     batch->Put(bucket1_key, bucket1_data);
 
@@ -388,7 +388,7 @@ rocksdb::Status CuckooChain::kickOutInsert(engine::Context &ctx, const Slice &ns
   // Write all modified buckets atomically
   if (*inserted && !modified_buckets.empty()) {
     auto batch = storage_->GetWriteBatchBase();
-    WriteBatchLogData log_data(kRedisCuckooFilter, {"CF.ADD", user_key.ToString()});
+    WriteBatchLogData log_data(kRedisCuckooFilter, std::vector<std::string>{"CF.ADD.kickout", ""});
     batch->PutLogData(log_data.Encode());
 
     for (const auto &entry : modified_buckets) {
@@ -413,7 +413,7 @@ rocksdb::Status CuckooChain::expandFilter(engine::Context &ctx, const Slice &ns_
 
   // Write updated metadata
   auto batch = storage_->GetWriteBatchBase();
-  WriteBatchLogData log_data(kRedisCuckooFilter, {"CF.EXPAND", ""});
+  WriteBatchLogData log_data(kRedisCuckooFilter, std::vector<std::string>{"CF.EXPAND", ""});
   batch->PutLogData(log_data.Encode());
 
   std::string metadata_bytes;
@@ -421,6 +421,81 @@ rocksdb::Status CuckooChain::expandFilter(engine::Context &ctx, const Slice &ns_
   batch->Put(metadata_cf_handle_, ns_key, metadata_bytes);
 
   return storage_->Write(ctx, storage_->DefaultWriteOptions(), batch->GetWriteBatch());
+}
+
+rocksdb::Status CuckooChain::Exists(engine::Context &ctx, const Slice &user_key, const Slice &item, bool *exists) {
+  std::string ns_key = AppendNamespacePrefix(user_key);
+
+  // Get metadata
+  CuckooChainMetadata metadata(false);
+  std::string raw_value;
+  rocksdb::ReadOptions read_options;
+  auto s = storage_->Get(ctx, read_options, metadata_cf_handle_, ns_key, &raw_value);
+  if (!s.ok()) {
+    if (s.IsNotFound()) {
+      return rocksdb::Status::NotFound("key not found");
+    }
+    return s;
+  }
+
+  // Decode metadata
+  Slice slice(raw_value);
+  s = metadata.Decode(&slice);
+  if (!s.ok()) {
+    return s;
+  }
+
+  // Validate metadata
+  if (metadata.n_filters == 0) {
+    return rocksdb::Status::Corruption("invalid metadata: n_filters is 0");
+  }
+
+  // Calculate hash and fingerprint for the item
+  uint64_t hash = CuckooFilter::Hash(item.data(), item.size());
+  uint8_t fingerprint = CuckooFilter::GenerateFingerprint(hash);
+
+  // If fingerprint is 0, we can't distinguish it from empty slots
+  // This is a known limitation - treat as not exists
+  if (fingerprint == 0) {
+    *exists = false;
+    return rocksdb::Status::OK();
+  }
+
+  // Check each sub-filter for the fingerprint
+  for (uint16_t filter_idx = 0; filter_idx < metadata.n_filters; ++filter_idx) {
+    // Calculate capacity for this filter
+    uint64_t filter_capacity = metadata.base_capacity * intPow(metadata.expansion, filter_idx);
+    uint32_t num_buckets = CuckooFilter::OptimalNumBuckets(filter_capacity, metadata.bucket_size);
+
+    // Calculate bucket indices
+    uint32_t bucket1_idx = hash % num_buckets;
+    uint64_t alt_hash = CuckooFilter::GetAltHash(fingerprint, hash);
+    uint32_t bucket2_idx = alt_hash % num_buckets;
+
+    // Read both buckets
+    std::string bucket1_key = getBucketKey(ns_key, metadata, filter_idx, bucket1_idx);
+    std::string bucket2_key = getBucketKey(ns_key, metadata, filter_idx, bucket2_idx);
+
+    std::string bucket1_data, bucket2_data;
+    s = readBucket(storage_, ctx, bucket1_key, metadata.bucket_size, &bucket1_data);
+    if (!s.ok()) return s;
+
+    s = readBucket(storage_, ctx, bucket2_key, metadata.bucket_size, &bucket2_data);
+    if (!s.ok()) return s;
+
+    // Check if fingerprint exists in either bucket
+    for (size_t i = 0; i < metadata.bucket_size; ++i) {
+      if (static_cast<uint8_t>(bucket1_data[i]) == fingerprint ||
+          static_cast<uint8_t>(bucket2_data[i]) == fingerprint) {
+        *exists = true;
+        return rocksdb::Status::OK();
+      }
+    }
+  }
+
+  // Fingerprint not found in any filter
+  *exists = false;
+  return rocksdb::Status::OK();
 }
 
 }  // namespace redis
